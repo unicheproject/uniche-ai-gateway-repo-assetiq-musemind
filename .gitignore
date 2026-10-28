@@ -1,0 +1,12 @@
+bin
+api/gatewayapi/
+*_templ.go
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+.env.*.local
+deploy.env
+api/repositoryapi/
+.DS_Store

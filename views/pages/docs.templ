@@ -1,0 +1,62 @@
+package pages
+
+import "uniche/views"
+
+templ Docs() {
+	@views.Layout("UNICHE API") {
+		<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"/>
+		<style>
+			/* Developer-login: the /docs/token proxy supplies the client, so hide Swagger's client fields. */
+			div:has(> label[for="password_type"]),
+			div:has(> label[for="client_id_password"]),
+			div:has(> label[for="client_secret_password"]) { display: none; }
+			/* No scopes are defined; hide Swagger's scope boilerplate. */
+			.scope-def { display: none; }
+			.copy-token { margin: 4px 0 12px; padding: 0; border: 0; background: none; color: inherit; font-size: 12px; text-decoration: underline; cursor: pointer; opacity: 0.8; }
+		</style>
+		<div id="swagger-ui"></div>
+		<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+		<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+		<script>
+			// Adds a small "Copy access token" link under the Developer-login form once logged in.
+			const TokenPlugin = function (system) {
+				return {
+					wrapComponents: {
+						oauth2: function (Original) {
+							return function (props) {
+								const h = system.React.createElement;
+								const token = props.authorized && props.authorized.getIn([props.name, "token", "access_token"]);
+								const copy = async function (e) {
+									try {
+										await navigator.clipboard.writeText(token);
+										e.target.textContent = "Copied";
+									} catch {
+										window.prompt("Access token", token);
+									}
+								};
+								return h("div", null,
+									h(Original, props),
+									token ? h("button", { type: "button", className: "copy-token", onClick: copy }, "Copy access token (for curl or other tools)") : null,
+								);
+							};
+						},
+					},
+				};
+			};
+			window.onload = function () {
+				window.ui = SwaggerUIBundle({
+					dom_id: "#swagger-ui",
+					urls: [
+						{ name: "UnicheAIGateway", url: "/openapi.yaml" },
+						{ name: "UNICHE Repository", url: "/repository.yaml" },
+						{ name: "MCP Transport", url: "/mcp-transport.yaml" },
+					],
+					queryConfigEnabled: true,
+					presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+					plugins: [TokenPlugin],
+					layout: "StandaloneLayout",
+				});
+			};
+		</script>
+	}
+}

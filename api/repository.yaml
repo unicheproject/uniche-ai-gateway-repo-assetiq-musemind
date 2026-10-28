@@ -1,0 +1,1382 @@
+openapi: "3.0.3"
+info:
+  title: UNICHE Repository API
+  description: |
+    Stores cultural heritage assets - 3D models, images, video, documents - with
+    their metadata and full edit history.
+
+    ## Getting started
+
+    1. Click **Authorize** and log in (or paste an access token).
+    2. Create an asset and upload its file in one request with
+       `POST /assets:upload`.
+    3. Or step by step: create the asset with `POST /assets`, then register a
+       file on its `currentVersionId` with
+       `POST /assets/{id}/versions/{versionId}/files`, then upload the bytes
+       to the `uploadUrl` you get back.
+    4. To edit metadata later, create a new version. Old versions are kept.
+
+    ## Things to know
+
+    - **Edits need the latest ETag.** Every read returns an `ETag`. Send it back
+      in `If-Match` when you change the asset. If someone changed it in the
+      meantime you get `412` - reload and try again.
+    - **Large files can be uploaded in chunks** and resumed after an
+      interruption.
+    - **This is storage, not search.** To find assets across ECCCH, Europeana
+      and partners, use AssetIQ.
+
+    Endpoints marked *internal* are used by other UNICHE services and are not
+    reachable from here.
+  version: "0.1.0"
+
+servers:
+  - url: /api/v1/repository
+    description: This server, through the API Gateway. Public endpoints only.
+  - url: http://localhost:8082
+    description: Internal endpoints (other UNICHE services only). Not available yet.
+
+security:
+  - Developer-login: []
+  - bearerAuth: []
+
+tags:
+  - name: Assets
+    description: An asset and who can see it.
+  - name: Versions
+    description: The metadata history of an asset. Every edit adds a version.
+  - name: Files
+    description: Upload and download the files of an asset.
+  - name: Relations
+    description: Links between assets, e.g. two objects from the same site.
+  - name: External IDs
+    description: The asset's identifiers in other systems (ECCCH, Europeana, Wikidata).
+  - name: Ingest (internal)
+    description: Internal. Used by AssetIQ to import search results.
+  - name: Verification (internal)
+    description: Internal. Used by MuseMind to fact-check drafts.
+  - name: Indexing (internal)
+    description: Internal. Used by AssetIQ to rebuild its search index.
+
+paths:
+  /assets:
+    post:
+      operationId: createAsset
+      tags: [Assets]
+      summary: Create an asset
+      description: Creates an asset from its metadata. Add files to it afterwards.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAssetRequest'
+      responses:
+        '201':
+          description: Asset created.
+          headers:
+            Etag:
+              $ref: '#/components/headers/Etag'
+            Location:
+              description: URL of the new asset.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listAssets
+      tags: [Assets]
+      summary: List assets
+      description: >
+        Page through assets, optionally filtered. Other users' private assets
+        are not included.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: source
+          in: query
+          schema:
+            $ref: '#/components/schemas/AssetSource'
+        - name: type
+          in: query
+          description: Type of the current version.
+          schema:
+            $ref: '#/components/schemas/AssetType'
+        - name: ownerId
+          in: query
+          schema:
+            type: string
+        - name: visibility
+          in: query
+          schema:
+            $ref: '#/components/schemas/Visibility'
+        - name: q
+          in: query
+          description: >
+            Words to look for in the title or creator, ignoring case.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 200
+      responses:
+        '200':
+          description: A page of assets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets:upload:
+    post:
+      operationId: uploadAsset
+      tags: [Assets]
+      summary: Create an asset with its file in one request
+      description: |
+        Send the metadata as JSON in a `metadata` field and the file in a
+        `file` field. The asset, its first version and the file are created
+        in one step.
+
+        **If anything goes wrong, send the same request again with the same
+        `Idempotency-Key`.** You never get a duplicate asset:
+
+        - If the asset was already created, you get it back.
+        - If its file wasn't stored yet, the retry stores it.
+
+        Errors after the asset was created include its `assetId` and the
+        file's `uploadUrl`. You can also finish the upload there with
+        `PUT /uploads/{uploadId}`, as long as the file is the same size as
+        the one you sent.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: >
+            A unique value your app generates for this upload, e.g. a UUID.
+            Reuse it only when retrying the same upload.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 255
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadAssetRequest'
+            encoding:
+              metadata:
+                contentType: application/json
+      responses:
+        '201':
+          description: Asset created and file stored. A retry gets the same asset back.
+          headers:
+            Etag:
+              $ref: '#/components/headers/Etag'
+            Location:
+              description: URL of the new asset.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      operationId: getAsset
+      tags: [Assets]
+      summary: Get an asset
+      responses:
+        '200':
+          description: The asset.
+          headers:
+            Etag:
+              $ref: '#/components/headers/Etag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    patch:
+      operationId: updateAsset
+      tags: [Assets]
+      summary: Change who can see an asset
+      description: To change the title, description or other metadata, create a new version instead.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAssetRequest'
+      responses:
+        '200':
+          description: The updated asset.
+          headers:
+            Etag:
+              $ref: '#/components/headers/Etag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: withdrawAsset
+      tags: [Assets]
+      summary: Withdraw an asset
+      description: Hides the asset. Nothing is deleted; its history is kept.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      responses:
+        '204':
+          description: Asset withdrawn.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    post:
+      operationId: createVersion
+      tags: [Versions]
+      summary: Edit an asset's metadata
+      description: >
+        Saves the new metadata as a new version; earlier versions stay as they
+        were. If someone else edited the asset since you last read it, you get
+        `412` instead, so no edit is silently lost.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVersionRequest'
+      responses:
+        '201':
+          description: Version created.
+          headers:
+            Etag:
+              $ref: '#/components/headers/Etag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listVersions
+      tags: [Versions]
+      summary: List an asset's versions, newest first
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}/versions/{versionId}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+      - $ref: '#/components/parameters/VersionId'
+    get:
+      operationId: getVersion
+      tags: [Versions]
+      summary: Get one version
+      responses:
+        '200':
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetVersion'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}/versions/{versionId}/files:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+      - $ref: '#/components/parameters/VersionId'
+    post:
+      operationId: registerFile
+      tags: [Files]
+      summary: Add a file (step 1 of 2)
+      description: >
+        Describe the file - type, size, checksum - and get back an `uploadUrl`.
+        Then send the bytes there (step 2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterFileRequest'
+      responses:
+        '201':
+          description: File registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileRegistration'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /uploads/{uploadId}:
+    parameters:
+      - $ref: '#/components/parameters/UploadId'
+    get:
+      operationId: getUploadStatus
+      tags: [Files]
+      summary: Check an upload's progress
+      description: >
+        After an interruption, call this to see how many bytes arrived
+        (`bytesReceived`) and resume from there. `0` means start over.
+      responses:
+        '200':
+          description: Current state of the upload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: uploadFile
+      tags: [Files]
+      summary: Upload a file's bytes (step 2 of 2)
+      description: |
+        Send the whole file in one request, or in chunks using `Content-Range`.
+
+        - Each chunk must start where the previous one ended (`bytesReceived`).
+          A wrong start returns `409` with the right offset.
+        - Send one chunk at a time.
+        - After the last chunk the file is checked against the size and
+          checksum you declared. If it doesn't match, the bytes are discarded;
+          send the file again to the same `uploadUrl`, starting from byte 0.
+      parameters:
+        - name: Content-Range
+          in: header
+          required: false
+          description: >
+            `bytes <start>-<end>/<total>` for a chunked transfer. Omit it to
+            send the whole file in one request.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '202':
+          description: Chunk stored; more bytes expected.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadStatus'
+        '204':
+          description: Upload complete, checksum verified; the file is now `available`.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /files/{fileId}:
+    get:
+      operationId: getFile
+      tags: [Files]
+      summary: Download a file
+      description: Works once the file's upload is complete.
+      parameters:
+        - name: fileId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The file bytes. `Content-Type` is the file's media type.
+          content:
+            '*/*':
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}/relations:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+    get:
+      operationId: listRelations
+      tags: [Relations]
+      summary: List an asset's links
+      description: Links from or to this asset.
+      responses:
+        '200':
+          description: The relations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RelationList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}/relations/{relation}/{targetId}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+      - name: relation
+        in: path
+        required: true
+        description: Relation type, e.g. `same_site`, `same_period`, `same_actor`, `visual_representation_of`.
+        schema:
+          type: string
+      - name: targetId
+        in: path
+        required: true
+        description: Id of the target asset.
+        schema:
+          type: string
+    put:
+      operationId: putRelation
+      tags: [Relations]
+      summary: Link two assets
+      description: Safe to repeat; linking twice has no extra effect.
+      responses:
+        '200':
+          description: The relation exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Relation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteRelation
+      tags: [Relations]
+      summary: Remove a link
+      responses:
+        '204':
+          description: The relation no longer exists.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /assets/{id}/external-ids/{provider}:
+    parameters:
+      - $ref: '#/components/parameters/AssetId'
+      - name: provider
+        in: path
+        required: true
+        description: Identifier namespace, e.g. `eccch`, `europeana`, `wikidata`.
+        schema:
+          type: string
+    get:
+      operationId: getExternalId
+      tags: [External IDs]
+      summary: Get the asset's identifier in a provider
+      responses:
+        '200':
+          description: The external identifier.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: putExternalId
+      tags: [External IDs]
+      summary: Set the asset's identifier in a provider
+      description: >
+        Safe to repeat. If another asset already has this identifier you get
+        `409` with that asset's id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PutExternalIdRequest'
+      responses:
+        '200':
+          description: The external identifier is set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExternalId'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteExternalId
+      tags: [External IDs]
+      summary: Remove the asset's identifier in a provider
+      responses:
+        '204':
+          description: The external identifier no longer exists.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /external-ids:lookup:
+    post:
+      operationId: lookupExternalIds
+      tags: [External IDs]
+      summary: Find assets by their identifiers in other systems
+      description: >
+        Send up to 100 provider and identifier pairs and get back the asset
+        each one belongs to. Pairs with no visible asset are left out.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupExternalIdsRequest'
+      responses:
+        '200':
+          description: The assets found, in no particular order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupExternalIdsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /internal/v1/ingest:
+    servers:
+      - url: http://localhost:8082
+        description: Internal only.
+    post:
+      operationId: ingestAsset
+      tags: [Ingest (internal)]
+      summary: Import an external record
+      description: >
+        Called by AssetIQ when a curator imports a search result. If the record
+        was imported before, nothing is written and `409` returns the existing
+        asset's id. Files are not imported yet.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+      responses:
+        '201':
+          description: Asset ingested.
+          headers:
+            Etag:
+              $ref: '#/components/headers/Etag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Asset'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /internal/v1/lookup:batch:
+    servers:
+      - url: http://localhost:8082
+        description: Internal only.
+    post:
+      operationId: lookupBatch
+      tags: [Verification (internal)]
+      summary: Look up many assets at once
+      description: >
+        Returns the given version of each asset, or its latest version if none
+        is given. Unknown assets come back as `found: false`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LookupBatchRequest'
+      responses:
+        '200':
+          description: One result per requested item, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LookupBatchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /internal/v1/assets:stream:
+    servers:
+      - url: http://localhost:8082
+        description: Internal only.
+    get:
+      operationId: streamVersions
+      tags: [Indexing (internal)]
+      summary: Read all versions in order
+      description: >
+        Omit `since` to start from the beginning; pass the returned
+        `nextCursor` as `since` to continue.
+      parameters:
+        - name: since
+          in: query
+          description: Opaque cursor from a previous response.
+          schema:
+            type: string
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    Developer-login:
+      type: oauth2
+      description: >
+        **Log in with your UNICHE account.** Once logged in, every request you
+        send from this page is authenticated automatically.
+      flows:
+        password:
+          tokenUrl: /docs/token
+          scopes: {}
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        **Or paste an access token** you already have (UNICHE realm, audience
+        `uniche-platform`).
+
+  headers:
+    Etag:
+      description: Identifies the asset's current state. Send it back in `If-Match` when you change the asset.
+      schema:
+        type: string
+
+  parameters:
+    AssetId:
+      name: id
+      in: path
+      required: true
+      description: Repository asset id.
+      schema:
+        type: string
+    VersionId:
+      name: versionId
+      in: path
+      required: true
+      schema:
+        type: string
+    UploadId:
+      name: uploadId
+      in: path
+      required: true
+      description: From the `registerFile` response.
+      schema:
+        type: string
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: The `ETag` from your last read of the asset.
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      description: The `nextCursor` from the previous page. Omit for the first page.
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  responses:
+    BadRequest:
+      description: Malformed or invalid request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthorized:
+      description: Missing, expired, or invalid token.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: You are logged in but have no access to this project or private asset.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: No such resource, or it is not visible to the caller.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Conflict:
+      description: |
+        The request clashes with the asset's current state. `code` says why:
+
+        - `read_only` - the asset's license doesn't allow changes.
+        - `duplicate_asset` - another asset already has this identifier (see `existingAssetId`).
+        - `incomplete_upload` - the file hasn't finished uploading.
+        - `bad_offset` - the chunk doesn't start at `bytesReceived`.
+        - `upload_in_progress` - another chunk for this upload is still being sent.
+        - `checksum_mismatch` - the file doesn't match the declared size or checksum; start the upload again.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    PreconditionFailed:
+      description: Someone changed the asset since you read it. Reload it and try again.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    InternalError:
+      description: Internal server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Problem:
+      type: object
+      description: Error details. On `409`, `code` says what went wrong.
+      required: [title]
+      properties:
+        type:
+          type: string
+          description: Problem type URI reference.
+        title:
+          type: string
+        detail:
+          type: string
+        code:
+          type: string
+          enum:
+            [
+              duplicate_asset,
+              read_only,
+              checksum_mismatch,
+              bad_offset,
+              upload_in_progress,
+              incomplete_upload,
+            ]
+          description: Present on `409` to tell the causes apart.
+        existingAssetId:
+          type: string
+          description: The asset that already holds the identifier. Present when `code` is `duplicate_asset`.
+        bytesReceived:
+          type: integer
+          format: int64
+          description: Where the next chunk must start. Present on `bad_offset` and `checksum_mismatch`.
+        assetId:
+          type: string
+          description: The asset that was created before the error. Present on `uploadAsset` errors once the asset exists.
+        uploadId:
+          type: string
+          description: The asset's unfinished upload. Present with `assetId`.
+        uploadUrl:
+          type: string
+          description: Where to send the file's bytes again (`PUT`). Present with `assetId`.
+
+    Visibility:
+      type: string
+      enum: [public, private]
+
+    AssetSource:
+      type: string
+      enum: [eccch, europeana, local, partner]
+
+    AssetType:
+      type: string
+      enum: ["3d", image, video, document, "360", audio]
+
+    FileStatus:
+      type: string
+      description: '`pending` until the upload is complete and checked, then `available`.'
+      enum: [pending, available]
+
+    AssetMetadata:
+      type: object
+      description: Descriptive fields of one version.
+      required: [title, type]
+      properties:
+        title:
+          type: string
+        description:
+          type: string
+        type:
+          $ref: '#/components/schemas/AssetType'
+        creator:
+          type: string
+        date:
+          type: string
+          description: Free text, as received.
+        location:
+          type: string
+        rights:
+          type: string
+
+    Asset:
+      type: object
+      description: An asset with its latest metadata.
+      required: [id, visibility, readOnly, source, createdAt]
+      properties:
+        id:
+          type: string
+        ownerId:
+          type: string
+          nullable: true
+          description: Who created it; empty for imported assets.
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        readOnly:
+          type: boolean
+          description: The license doesn't allow changes. Only an administrator can lift this.
+        source:
+          $ref: '#/components/schemas/AssetSource'
+        currentVersionId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        externalIds:
+          type: array
+          description: >
+            The asset's ids in outside systems, such as the Europeana record it
+            was imported from. Absent when there are none.
+          items:
+            type: object
+            required: [provider, identifier]
+            properties:
+              provider:
+                type: string
+              identifier:
+                type: string
+        currentVersion:
+          $ref: '#/components/schemas/AssetVersion'
+
+    AssetVersion:
+      type: object
+      description: One saved state of an asset's metadata. Never changes.
+      required: [id, assetId, createdAt]
+      properties:
+        id:
+          type: string
+        assetId:
+          type: string
+        parentId:
+          type: string
+          nullable: true
+          description: Previous version; null for the first.
+        title:
+          type: string
+        description:
+          type: string
+        type:
+          $ref: '#/components/schemas/AssetType'
+        creator:
+          type: string
+        date:
+          type: string
+        location:
+          type: string
+        rights:
+          type: string
+        rawSource:
+          type: string
+          nullable: true
+          description: >
+            The record as received from its source, kept for reference:
+            JSON-LD from Europeana, SPARQL JSON results from ECCCH.
+        createdAt:
+          type: string
+          format: date-time
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetFile'
+
+    AssetFile:
+      type: object
+      required: [id, versionId, status]
+      properties:
+        id:
+          type: string
+        versionId:
+          type: string
+        status:
+          $ref: '#/components/schemas/FileStatus'
+        url:
+          type: string
+          description: Download link. Works once `status` is `available`.
+        mediaType:
+          type: string
+        sha256:
+          type: string
+          description: SHA-256 checksum of the file (hex).
+        sizeBytes:
+          type: integer
+          format: int64
+        registeredAt:
+          type: string
+          format: date-time
+          description: When the file was added. Unfinished uploads are removed after a while.
+
+    ExternalId:
+      type: object
+      required: [assetId, provider, identifier]
+      properties:
+        assetId:
+          type: string
+        provider:
+          type: string
+        identifier:
+          type: string
+
+    Relation:
+      type: object
+      required: [sourceId, targetId, relation]
+      properties:
+        sourceId:
+          type: string
+        targetId:
+          type: string
+        relation:
+          type: string
+
+    RelationList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Relation'
+
+    AssetPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Asset'
+        nextCursor:
+          type: string
+          description: Absent on the last page.
+
+    VersionPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetVersion'
+        nextCursor:
+          type: string
+          description: Absent on the last page.
+
+    CreateAssetRequest:
+      type: object
+      required: [metadata]
+      properties:
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        metadata:
+          $ref: '#/components/schemas/AssetMetadata'
+
+    UploadAssetRequest:
+      type: object
+      required: [metadata, file]
+      properties:
+        metadata:
+          $ref: '#/components/schemas/AssetMetadata'
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+        sha256:
+          type: string
+          description: >
+            Optional SHA-256 checksum of the file (hex). If you send it, the
+            file is checked against it.
+          pattern: '^[a-f0-9]{64}$'
+        file:
+          type: string
+          format: binary
+          description: The file. Its type is taken from the part's `Content-Type`.
+
+    UpdateAssetRequest:
+      type: object
+      required: [visibility]
+      properties:
+        visibility:
+          $ref: '#/components/schemas/Visibility'
+
+    CreateVersionRequest:
+      type: object
+      required: [metadata]
+      properties:
+        metadata:
+          $ref: '#/components/schemas/AssetMetadata'
+
+    RegisterFileRequest:
+      type: object
+      required: [mediaType, sha256, sizeBytes]
+      properties:
+        mediaType:
+          type: string
+        sha256:
+          type: string
+          description: SHA-256 checksum of the file you will upload (hex).
+          pattern: '^[a-f0-9]{64}$'
+        sizeBytes:
+          type: integer
+          format: int64
+          minimum: 1
+
+    FileRegistration:
+      type: object
+      required: [file, uploadId, uploadUrl]
+      properties:
+        file:
+          $ref: '#/components/schemas/AssetFile'
+        uploadId:
+          type: string
+        uploadUrl:
+          type: string
+          description: Where to send the file's bytes (step 2).
+
+    UploadStatus:
+      type: object
+      required: [uploadId, fileId, status, bytesReceived, sizeBytes]
+      properties:
+        uploadId:
+          type: string
+        fileId:
+          type: string
+        status:
+          $ref: '#/components/schemas/FileStatus'
+        bytesReceived:
+          type: integer
+          format: int64
+          description: Bytes received so far; the next chunk starts here.
+        sizeBytes:
+          type: integer
+          format: int64
+          description: The file's total size, as declared.
+
+    PutExternalIdRequest:
+      type: object
+      required: [identifier]
+      properties:
+        identifier:
+          type: string
+
+    IngestRequest:
+      type: object
+      required: [source, externalId, metadata]
+      properties:
+        source:
+          type: string
+          enum: [eccch, europeana, partner]
+        externalId:
+          type: object
+          description: The record's id at its source. Used to detect repeat imports.
+          required: [provider, identifier]
+          properties:
+            provider:
+              type: string
+            identifier:
+              type: string
+        readOnly:
+          type: boolean
+          default: false
+          description: Set from the source license.
+        metadata:
+          $ref: '#/components/schemas/AssetMetadata'
+        rawSource:
+          type: string
+          description: >
+            The record as received from its source, verbatim: JSON-LD from
+            Europeana, SPARQL JSON results from ECCCH.
+
+    LookupBatchRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [assetId]
+            properties:
+              assetId:
+                type: string
+              versionId:
+                type: string
+
+    LookupResult:
+      type: object
+      required: [assetId, found]
+      properties:
+        assetId:
+          type: string
+        versionId:
+          type: string
+        found:
+          type: boolean
+        version:
+          $ref: '#/components/schemas/AssetVersion'
+
+    LookupExternalIdsRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [provider, identifier]
+            properties:
+              provider:
+                type: string
+                example: europeana
+              identifier:
+                type: string
+                example: /90402/SK_A_2344
+
+    LookupExternalIdsResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [provider, identifier, assetId]
+            properties:
+              provider:
+                type: string
+              identifier:
+                type: string
+              assetId:
+                type: string
+
+    LookupBatchResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/LookupResult'

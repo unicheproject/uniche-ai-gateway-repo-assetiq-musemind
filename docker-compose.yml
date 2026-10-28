@@ -1,0 +1,41 @@
+services:
+  uniche:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG
+    container_name: ${CONTAINER_PREFIX:-uniche}
+    ports:
+      - "${DOCS_HOST_PORT:-9819}:8080"
+      - "${MCP_HOST_PORT:-9820}:8081"
+    env_file:
+      - ${DEPLOY_ENV_FILE:-.env}
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    volumes:
+      - uniche-data:/app/uniche-data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    container_name: ${CONTAINER_PREFIX:-uniche}-postgres
+    env_file:
+      - ${DEPLOY_ENV_FILE:-.env}
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-uniche}
+    volumes:
+      - uniche-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  uniche-data:
+  uniche-postgres:

@@ -1,0 +1,7 @@
+services:
+  uniche:
+    logging:
+      driver: gelf
+      options:
+        gelf-address: ${GELF_ADDRESS:-udp://octo.local:12201}
+        tag: ${GELF_TAG:-uniche-logs}

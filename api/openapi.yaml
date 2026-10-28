@@ -1,0 +1,923 @@
+openapi: "3.0.3"
+info:
+  title: UNICHE API
+  description: |
+    Registration and management API for the UNICHE MCP server, plus the REST
+    form of every AI capability.
+
+    The Repository API and the MCP SSE transport (JSON-RPC over Server-Sent
+    Events) are separate specs; switch to them with the selector at the top of
+    this page.
+  version: "0.1.0"
+
+servers:
+  - url: /
+    description: This server (the host serving these docs)
+
+security:
+  - Developer-login: []
+  - bearerAuth: []
+
+tags:
+  - name: MuseMind
+    description: >
+      Served by MuseMind, the generative AI assistant. Returns suggestions only
+      - never writes to the Repository. Every response carries an `aiTag`.
+  - name: AssetIQ
+    description: >
+      Served by AssetIQ. Federated discovery across ECCCH, Europeana, and
+      partner collections. Search results are transient until explicitly
+      imported.
+  - name: Tool Registry
+    description: >
+      Served by UnicheAIGateway. Registration and management of remote MCP
+      tools.
+  - name: ICAgent
+    description: >
+      Served by UnicheAIGateway for ICAgent. Visitor-facing context, read-only
+      and consent-gated.
+
+paths:
+  /api/tools/register:
+    post:
+      operationId: registerTool
+      tags: [Tool Registry]
+      summary: Register a remote tool with the MCP server
+      description: >
+        Persists a tool descriptor and live-registers it with the running MCP
+        server. The MCP server will forward tool invocations to callback_url
+        as POST requests with the call parameters encoded as JSON.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterToolRequest'
+      responses:
+        '201':
+          description: Tool registered successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterToolResponse'
+        '400':
+          description: Missing or invalid fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A tool with that name is already registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/assets/search:
+    post:
+      operationId: searchAssets
+      tags: [AssetIQ]
+      summary: Keyword/semantic search over the UNICHE Repository and ECCCH Knowledge Graph
+      description: REST form of assetiq://search.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+      responses:
+        '200':
+          description: Search results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/assets/recommend:
+    post:
+      operationId: recommendAssets
+      tags: [AssetIQ]
+      summary: Suggest repository assets related to a scene or a visitor's profile/history
+      description: REST form of assetiq.recommend.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendRequest'
+      responses:
+        '200':
+          description: Recommendations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/assets/{uri}/preview:
+    get:
+      operationId: previewAsset
+      tags: [AssetIQ]
+      summary: Resolve an asset URI to a low-resolution preview
+      description: >
+        REST form of assetiq://preview.
+        `uri` is an assetiq:// URI returned by searchAssets - URL-encode it
+        when placing it in the path.
+      parameters:
+        - name: uri
+          in: path
+          required: true
+          description: An `assetiq://` URI from searchAssets, URL-encoded.
+          schema:
+            type: string
+            pattern: '^assetiq://\S+$'
+            example: assetiq://europeana/item/123/abc
+      responses:
+        '200':
+          description: Preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/assets/import:
+    post:
+      operationId: importAsset
+      tags: [AssetIQ]
+      summary: Write a curator-selected search result into the UNICHE Repository
+      description: >
+        REST form of assetiq.import (private - not exposed beyond
+        authenticated curator sessions).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImportRequest'
+      responses:
+        '200':
+          description: Import result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          description: Importing from this source is not enabled on this server.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/brainstorm:
+    post:
+      operationId: brainstorm
+      tags: [MuseMind]
+      summary: Generate a draft narrative/experience structure from a topic and asset context
+      description: REST form of musemind.brainstorm.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrainstormRequest'
+      responses:
+        '200':
+          description: Draft scene graph.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrainstormResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/rewrite:
+    post:
+      operationId: rewrite
+      tags: [MuseMind]
+      summary: Adapt existing HTML content for a different audience, language, or tone
+      description: REST form of musemind.rewrite.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RewriteRequest'
+      responses:
+        '200':
+          description: Rewritten content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RewriteResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/verify:
+    post:
+      operationId: verify
+      tags: [MuseMind]
+      summary: Cross-check explicit claim/source pairs against the UNICHE Repository/ECCCH records
+      description: REST form of musemind.verify.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: Verification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/assets/{uri}/enrich:
+    post:
+      operationId: enrichAsset
+      tags: [MuseMind]
+      summary: Suggest metadata improvements for a repository asset
+      description: REST form of musemind.enrich.
+      parameters:
+        - name: uri
+          in: path
+          required: true
+          description: An `assetiq://` URI from searchAssets, URL-encoded.
+          schema:
+            type: string
+            pattern: '^assetiq://\S+$'
+            example: assetiq://europeana/item/123/abc
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnrichRequest'
+      responses:
+        '200':
+          description: Suggested metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrichResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/feedback/summarize:
+    post:
+      operationId: summarizeFeedback
+      tags: [MuseMind]
+      summary: Cluster and summarize a batch of visitor feedback entries
+      description: REST form of musemind.summarize_feedback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SummarizeFeedbackRequest'
+      responses:
+        '200':
+          description: Feedback clusters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SummarizeFeedbackResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/visitors/{visitorId}/profile:
+    get:
+      operationId: getVisitorProfile
+      tags: [ICAgent]
+      summary: Read-only, consent-gated visitor context for personalization
+      description: REST form of visitorprofile://{visitorId}.
+      parameters:
+        - name: visitorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Visitor profile (empty if consentLevel does not permit personalization).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VisitorProfileResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    Developer-login:
+      type: oauth2
+      description: >
+        **Log in with your UNICHE account.** Once logged in, every request you
+        send from this page is authenticated automatically.
+      flows:
+        password:
+          tokenUrl: /docs/token
+          scopes: {}
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        **Or paste an access token** you already have (UNICHE realm, audience
+        `uniche-platform`).
+
+  responses:
+    BadRequest:
+      description: Missing or invalid fields.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing, expired, or invalid token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated, but not permitted to perform this operation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: No such resource.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    RegisterToolRequest:
+      type: object
+      required: [name, description, callback_url]
+      properties:
+        name:
+          type: string
+          description: Unique tool name as it will appear to the LLM.
+          example: my-tool
+        description:
+          type: string
+          description: Human-readable description shown to the LLM during tool selection.
+          example: Fetches live prices from the heritage asset marketplace.
+        callback_url:
+          type: string
+          format: uri
+          description: >
+            HTTP endpoint the MCP server will POST to when this tool is invoked.
+            Must be reachable from the UNICHE Cloud server.
+          example: http://my-service:9000/call
+
+    RegisterToolResponse:
+      type: object
+      required: [id, name, registered_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+        registered_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+
+    AiTag:
+      type: object
+      description: Mandatory on every generative response (UR186).
+      required: [generated]
+      properties:
+        generated:
+          type: boolean
+        model:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    RelatedAsset:
+      type: object
+      properties:
+        uri:
+          type: string
+        relation:
+          type: string
+          description: HDTO HP-property linking the two records (e.g. "HP9 is visual representation").
+
+    SearchResult:
+      type: object
+      properties:
+        uri:
+          type: string
+        versionId:
+          type: string
+          description: Pins the exact asset_versions snapshot this result reflects.
+        title:
+          type: string
+        type:
+          type: string
+          enum: [3d, "360", image, text]
+        thumbnailUrl:
+          type: string
+        eccchId:
+          type: string
+          description: Permalink into the ECCCH Knowledge Base for this asset's record, if published.
+        score:
+          type: number
+        relatedTo:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelatedAsset'
+
+    SearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+        types:
+          type: array
+          items:
+            type: string
+            enum: [3d, "360", image, text]
+        audience:
+          type: string
+        language:
+          type: string
+        collectionScope:
+          type: string
+          description: Institution/private collection id (AIR/009).
+        expandIntent:
+          type: boolean
+          description: Run the query through MuseMind first to expand it into related terms (AIR/005).
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+        cursor:
+          type: string
+          description: Opaque cursor from a previous response's `nextCursor`.
+
+    SearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SearchResult'
+        expandedQuery:
+          type: string
+        nextCursor:
+          type: string
+          description: Absent on the last page.
+        total:
+          type: integer
+          description: Total number of matches across all pages.
+
+    RecommendContext:
+      type: object
+      description: Either { storyId, sceneId } for authoring, or { visitorProfileId } for experiencing.
+      properties:
+        storyId:
+          type: string
+        sceneId:
+          type: string
+        visitorProfileId:
+          type: string
+
+    RecommendRequest:
+      type: object
+      properties:
+        context:
+          $ref: '#/components/schemas/RecommendContext'
+        basis:
+          type: string
+          enum: [similarity, theme, visitor-history]
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        cursor:
+          type: string
+          description: Opaque cursor from a previous response's `nextCursor`.
+        audience:
+          type: string
+
+    Recommendation:
+      type: object
+      properties:
+        uri:
+          type: string
+        title:
+          type: string
+        score:
+          type: number
+        explanation:
+          type: string
+          description: Mandatory - what relation produced the suggestion (AIR/015).
+        relatedTo:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelatedAsset'
+
+    RecommendResponse:
+      type: object
+      properties:
+        recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Recommendation'
+        nextCursor:
+          type: string
+          description: Absent on the last page.
+        total:
+          type: integer
+          description: Total number of recommendations across all pages.
+
+    PreviewResponse:
+      type: object
+      properties:
+        uri:
+          type: string
+        lowResUrl:
+          type: string
+        mimeType:
+          type: string
+
+    ImportRequest:
+      type: object
+      required: [uri]
+      properties:
+        uri:
+          type: string
+          description: An assetiq:// result from searchAssets, still transient at this point.
+
+    ImportResponse:
+      type: object
+      properties:
+        assetId:
+          type: string
+        versionId:
+          type: string
+        status:
+          type: string
+          enum: [imported, duplicate]
+
+    AssetContextEntry:
+      type: object
+      description: A result from searchAssets, used as grounding for brainstorm.
+      properties:
+        uri:
+          type: string
+        versionId:
+          type: string
+        title:
+          type: string
+
+    CitedAsset:
+      type: object
+      description: Pins a factual statement to the repository asset (and version) it's attributed to.
+      properties:
+        uri:
+          type: string
+        versionId:
+          type: string
+        claim:
+          type: string
+
+    SceneLink:
+      type: object
+      properties:
+        to:
+          type: string
+        label:
+          type: string
+
+    Scene:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+          description: HTML.
+        tags:
+          type: array
+          items:
+            type: string
+        suggestedAssets:
+          type: array
+          items:
+            type: string
+        links:
+          type: array
+          items:
+            $ref: '#/components/schemas/SceneLink'
+
+    BrainstormRequest:
+      type: object
+      properties:
+        scene:
+          type: string
+        audiences:
+          type: array
+          items:
+            type: string
+        assetContext:
+          type: array
+          items:
+            $ref: '#/components/schemas/AssetContextEntry'
+        existingStructure:
+          type: object
+          additionalProperties: true
+          description: Prior scenes, for continuation.
+        format:
+          type: object
+          additionalProperties: true
+          description: Optional JSON Schema describing the desired shape of the response's data field.
+
+    BrainstormResponse:
+      type: object
+      properties:
+        title:
+          type: string
+        scenes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Scene'
+        citedAssets:
+          type: array
+          items:
+            $ref: '#/components/schemas/CitedAsset'
+        data:
+          type: object
+          additionalProperties: true
+          description: Present instead of title/scenes when the request supplied format.
+        aiTag:
+          $ref: '#/components/schemas/AiTag'
+
+    RewriteRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          description: HTML.
+        audience:
+          type: string
+          enum: [children, experts, general]
+        language:
+          type: string
+        brandProfile:
+          type: object
+          additionalProperties: true
+        format:
+          type: object
+          additionalProperties: true
+
+    RewriteResponse:
+      type: object
+      properties:
+        text:
+          type: string
+          description: HTML.
+        audience:
+          type: string
+        language:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+          description: Present instead of text when the request supplied format.
+        aiTag:
+          $ref: '#/components/schemas/AiTag'
+
+    VerifyRequest:
+      type: object
+      required: [citedAssets]
+      properties:
+        citedAssets:
+          type: array
+          items:
+            $ref: '#/components/schemas/CitedAsset'
+        draft:
+          type: string
+          description: Full text, for context/highlighting only - not parsed for claims.
+        strict:
+          type: boolean
+          description: If true, an empty citedAssets fails closed.
+
+    VerifyIssue:
+      type: object
+      properties:
+        claim:
+          type: string
+        assetUri:
+          type: string
+        versionId:
+          type: string
+        repositoryValue:
+          type: string
+        draftValue:
+          type: string
+        status:
+          type: string
+          enum: [match, mismatch, unverifiable]
+
+    VerifyResponse:
+      type: object
+      properties:
+        verified:
+          type: boolean
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerifyIssue'
+        aiTag:
+          $ref: '#/components/schemas/AiTag'
+
+    EnrichRequest:
+      type: object
+      properties:
+        existingMetadata:
+          type: object
+          additionalProperties: true
+          description: Current repository record fields.
+
+    EnrichSuggestions:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+        description:
+          type: string
+        fields:
+          type: object
+          additionalProperties: true
+
+    EnrichResponse:
+      type: object
+      properties:
+        suggestions:
+          $ref: '#/components/schemas/EnrichSuggestions'
+        confidence:
+          type: number
+        aiTag:
+          $ref: '#/components/schemas/AiTag'
+        requiresReview:
+          type: boolean
+          description: Hardcoded true - this tool can never write directly to the repository.
+
+    FeedbackEntry:
+      type: object
+      properties:
+        text:
+          type: string
+        rating:
+          type: number
+        locale:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        context:
+          type: object
+          additionalProperties: true
+
+    SummarizeFeedbackRequest:
+      type: object
+      required: [feedbackEntries]
+      properties:
+        feedbackEntries:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackEntry'
+        groupBy:
+          type: string
+          description: Optional - by exhibit, by story, by time window.
+
+    FeedbackCluster:
+      type: object
+      properties:
+        theme:
+          type: string
+        count:
+          type: integer
+        sentiment:
+          type: string
+        sampleQuotes:
+          type: array
+          items:
+            type: string
+
+    SummarizeFeedbackResponse:
+      type: object
+      properties:
+        clusters:
+          type: array
+          items:
+            $ref: '#/components/schemas/FeedbackCluster'
+        aiTag:
+          $ref: '#/components/schemas/AiTag'
+
+    VisitorProfileResponse:
+      type: object
+      properties:
+        language:
+          type: string
+        accessibilityPreferences:
+          type: object
+          additionalProperties: true
+        interests:
+          type: array
+          items:
+            type: string
+        visitedAssets:
+          type: array
+          items:
+            type: string
+        consentLevel:
+          type: string

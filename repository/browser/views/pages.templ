@@ -1,0 +1,460 @@
+package views
+
+import "uniche/api/repositoryapi"
+
+// layout is the app shell: icon rail, top bar with search and user, and the
+// page body. nav lights the matching rail item; q fills the search box.
+templ layout(heading string, nav Nav, q string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ heading } - UNICHE Repository</title>
+			<link rel="stylesheet" href={ BasePath + "/static/browser.css" }/>
+			<script src={ BasePath + "/static/htmx.min.js" } defer></script>
+		</head>
+		<body>
+			<div class="shell">
+				<aside class="rail">
+					<a class="mark" href={ templ.SafeURL(ListURL("", "", "", nil)) } title="UNICHE Repository">
+						<img src={ BasePath + "/static/uniche-mark.png" } alt="UNICHE"/>
+					</a>
+					<nav>
+						<a
+							class={ "rail-link", templ.KV("active", nav == NavAssets) }
+							href={ templ.SafeURL(ListURL("", "", "", nil)) }
+							title="Assets"
+							aria-label="Assets"
+							{ current(nav, NavAssets)... }
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 0 1 6 3.75h2.25A2.25 2.25 0 0 1 10.5 6v2.25a2.25 2.25 0 0 1-2.25 2.25H6a2.25 2.25 0 0 1-2.25-2.25V6ZM3.75 15.75A2.25 2.25 0 0 1 6 13.5h2.25a2.25 2.25 0 0 1 2.25 2.25V18a2.25 2.25 0 0 1-2.25 2.25H6A2.25 2.25 0 0 1 3.75 18v-2.25ZM13.5 6a2.25 2.25 0 0 1 2.25-2.25H18A2.25 2.25 0 0 1 20.25 6v2.25A2.25 2.25 0 0 1 18 10.5h-2.25a2.25 2.25 0 0 1-2.25-2.25V6ZM13.5 15.75a2.25 2.25 0 0 1 2.25-2.25H18a2.25 2.25 0 0 1 2.25 2.25V18A2.25 2.25 0 0 1 18 20.25h-2.25A2.25 2.25 0 0 1 13.5 18v-2.25Z"></path></svg>
+						</a>
+						<a
+							class={ "rail-link", templ.KV("active", nav == NavSearch) }
+							href={ templ.SafeURL(BasePath + "/search") }
+							title="Discover"
+							aria-label="Discover"
+							{ current(nav, NavSearch)... }
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"></path></svg>
+						</a>
+					</nav>
+				</aside>
+				<div class="main-col">
+					<header class="topbar">
+						@searchBar(q)
+						if name := UserFrom(ctx); name != "" {
+							<div class="user">
+								<span class="user-name">{ name }</span>
+								<span class="avatar" aria-hidden="true">{ initial(name) }</span>
+							</div>
+						}
+					</header>
+					<main>
+						{ children... }
+					</main>
+				</div>
+			</div>
+			<script>
+				document.addEventListener("keydown", function (e) {
+					if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+						e.preventDefault();
+						var q = document.getElementById("q");
+						if (q) { q.focus(); q.select(); }
+					}
+				});
+			</script>
+		</body>
+	</html>
+}
+
+func current(nav, want Nav) templ.Attributes {
+	if nav == want {
+		return templ.Attributes{"aria-current": "page"}
+	}
+	return nil
+}
+
+// card is one tile of the asset grid. The title link stretches over the whole
+// card; children fill the meta slot under it. The type icon tile is always
+// drawn, so a missing or broken thumbnail leaves the tile showing.
+templ card(c CardData) {
+	<div class="card">
+		<div class="thumb tile">
+			<svg class="type-icon" viewBox="0 0 24 24" fill="none" stroke-width="1.25" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d={ typeIcon(c.Type) }></path></svg>
+			if c.Thumb != "" {
+				<img src={ templ.URL(c.Thumb) } alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()"/>
+			}
+			if l := typeLabel(c.Type); l != "" {
+				<span class="type-chip">{ l }</span>
+			}
+		</div>
+		<div class="body">
+			<h3 class="title">
+				if c.Href != "" {
+					<a href={ templ.SafeURL(c.Href) } { c.linkAttrs()... }>{ c.Title }</a>
+				} else {
+					<span>{ c.Title }</span>
+				}
+			</h3>
+			<div class="meta">
+				{ children... }
+			</div>
+		</div>
+	</div>
+}
+
+// skeletonCard is the loading state of a card.
+templ skeletonCard() {
+	<div class="card skeleton" aria-hidden="true">
+		<div class="thumb"></div>
+		<div class="body">
+			<div class="bar"></div>
+			<div class="bar short"></div>
+		</div>
+	</div>
+}
+
+// sourcePill is the source dot and label of an asset.
+templ sourcePill(source string) {
+	<span class="pill">
+		<span class={ "dot", templ.KV("eccch", source == "eccch") }></span>
+		{ sourceLabel(source) }
+	</span>
+}
+
+templ filterChip(name, label, selected string, values []string) {
+	<select name={ name } class={ "chip", templ.KV("set", selected != "") } aria-label={ label } onchange="this.form.requestSubmit()">
+		<option value="">{ label }: All</option>
+		for _, v := range values {
+			<option value={ v } selected?={ v == selected }>{ label }: { filterLabel(name, v) }</option>
+		}
+	</select>
+}
+
+templ ListPage(assets []repositoryapi.Asset, nav PageNav) {
+	@layout("Assets", NavAssets, "") {
+		<p class="eyebrow">Repository</p>
+		<h1 class="page-title">Assets</h1>
+		<form class="filters" method="get" action={ templ.SafeURL(BasePath + "/") }>
+			@filterChip("source", "Source", nav.Source, sourceOptions())
+			@filterChip("type", "Type", nav.Type, typeOptions())
+			<noscript><button type="submit" class="btn-outline">Filter</button></noscript>
+		</form>
+		if len(assets) == 0 {
+			<p class="muted empty">No assets.</p>
+		} else {
+			<div class="grid">
+				for _, a := range assets {
+					@card(CardData{Href: assetURL(a.ID), Title: title(a), Type: assetType(a), Thumb: thumbURL(a)}) {
+						@sourcePill(string(a.Source))
+						<span class="date">{ a.CreatedAt.Format("2 Jan 2006") }</span>
+					}
+				}
+			</div>
+		}
+		if nav.PrevURL != "" || nav.NextURL != "" {
+			<nav class="pager" aria-label="Pages">
+				if nav.PrevURL != "" {
+					<a class="btn-outline" rel="prev" href={ templ.SafeURL(nav.PrevURL) }>&larr; Previous</a>
+				} else {
+					<a class="btn-outline" aria-disabled="true">&larr; Previous</a>
+				}
+				if nav.NextURL != "" {
+					<a class="btn-outline" rel="next" href={ templ.SafeURL(nav.NextURL) }>Next &rarr;</a>
+				} else {
+					<a class="btn-outline" aria-disabled="true">Next &rarr;</a>
+				}
+			</nav>
+		}
+	}
+}
+
+templ DetailPage(a *repositoryapi.Asset) {
+	@layout(title(*a), NavAssets, "") {
+		{{ v := a.CurrentVersion.Value }}
+		<nav class="crumbs">
+			<a href={ templ.SafeURL(ListURL("", "", "", nil)) }>Assets</a>
+			<span>/</span>
+			<span class="here">{ title(*a) }</span>
+		</nav>
+		<div class="detail-head">
+			<div>
+				<h1 class="detail-title">{ title(*a) }</h1>
+				<div class="pills">
+					if l := typeLabel(assetType(*a)); l != "" {
+						<span class="tag tag-type">{ l }</span>
+					}
+					<span class="tag tag-source">{ sourceLabel(string(a.Source)) }</span>
+				</div>
+			</div>
+			<div class="actions">
+				if HasSourceGraph(a) {
+					<a class="btn-outline" href={ templ.SafeURL(graphURL(a.ID, "")) }>View source graph</a>
+				}
+				if link := originalLink(a); link != "" {
+					<a class="btn-outline" href={ templ.SafeURL(link) } rel="noreferrer" target="_blank">Open original &#8599;</a>
+				}
+			</div>
+		</div>
+		<div class="detail">
+			<div class="detail-media">
+				<div class="media tile">
+					<svg class="type-icon big" viewBox="0 0 24 24" fill="none" stroke-width="1.25" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d={ typeIcon(assetType(*a)) }></path></svg>
+					if id := thumbnailID(*a); id != "" {
+						<img src={ fileURL(id) } alt={ title(*a) } onerror="this.remove()"/>
+					}
+				</div>
+			</div>
+			<div class="detail-side">
+				<section class="panel">
+					<h2 class="label">About</h2>
+					if v.Description.Value != "" {
+						<p class="description">{ v.Description.Value }</p>
+					}
+					<dl class="facts">
+						@fact("Creator", v.Creator.Value)
+						@fact("Date", v.Date.Value)
+						@fact("Location", v.Location.Value)
+						@fact("Rights", v.Rights.Value)
+					</dl>
+				</section>
+				<section class="panel">
+					<h2 class="label">Files</h2>
+					<ul class="files">
+						for _, f := range v.Files {
+							<li>
+								<span>
+									<span class="muted">{ f.MediaType.Value } &middot; { humanSize(f.SizeBytes.Value) }</span>
+								</span>
+								if f.Status == repositoryapi.FileStatusAvailable {
+									<a href={ templ.SafeURL(fileURL(f.ID)) }>Download</a>
+								} else {
+									<span class="muted">{ string(f.Status) }</span>
+								}
+							</li>
+						}
+					</ul>
+					if len(v.Files) == 0 {
+						<p class="muted">No files.</p>
+					}
+				</section>
+				<details class="panel">
+					<summary class="label">Identifiers</summary>
+					<dl class="facts ids">
+						<dt>Asset ID</dt>
+						<dd class="mono">{ a.ID }</dd>
+						for _, x := range a.ExternalIds {
+							<dt>External ID</dt>
+							<dd>@externalID(x)</dd>
+						}
+						<dt>Visibility</dt>
+						<dd>{ string(a.Visibility) }</dd>
+						if v.ID != "" {
+							<dt>Version</dt>
+							<dd class="mono">{ v.ID }</dd>
+						}
+						<dt>Created</dt>
+						<dd>{ a.CreatedAt.Format("2006-01-02 15:04:05 MST") }</dd>
+					</dl>
+				</details>
+			</div>
+		</div>
+		if raw := v.RawSource.Value; raw != "" {
+			<details class="panel raw">
+				<summary class="label">Source record as received</summary>
+				<pre>{ raw }</pre>
+			</details>
+		}
+	}
+}
+
+// fact is one row of a definition list, left out when the value is empty.
+templ fact(label, value string) {
+	if value != "" {
+		<dt>{ label }</dt>
+		<dd>{ value }</dd>
+	}
+}
+
+// externalID shows provider:identifier, linked to the source record when
+// the identifier maps to a public web page.
+templ externalID(x repositoryapi.AssetExternalIdsItem) {
+	if link := externalLink(x); link != "" {
+		<a href={ templ.SafeURL(link) } rel="noreferrer" target="_blank">{ x.Provider }: { x.Identifier }</a>
+	} else {
+		{ x.Provider }: { x.Identifier }
+	}
+}
+
+templ GraphPage(a *repositoryapi.Asset, g *Graph) {
+	@layout(title(*a), NavAssets, "") {
+		<nav class="crumbs">
+			<a href={ templ.SafeURL(assetURL(a.ID)) }>Back to asset</a>
+		</nav>
+		<h1 class="detail-title">{ title(*a) } - source graph</h1>
+		<div class="graph">
+			if g.Found {
+				<section class="panel">
+					<h3 class="subject">@termValue(g.Subject)</h3>
+					<h4 class="label">Outgoing</h4>
+					<table>
+						<thead><tr><th>Predicate</th><th>Object</th></tr></thead>
+						<tbody>
+							for _, row := range g.Outgoing {
+								<tr><td>@termValue(row.Predicate)</td><td>@termValue(row.Other)</td></tr>
+							}
+							if len(g.Outgoing) == 0 {
+								<tr><td colspan="2" class="muted">None.</td></tr>
+							}
+						</tbody>
+					</table>
+					<h4 class="label">Incoming</h4>
+					<table>
+						<thead><tr><th>Subject</th><th>Predicate</th></tr></thead>
+						<tbody>
+							for _, row := range g.Incoming {
+								<tr><td>@termValue(row.Other)</td><td>@termValue(row.Predicate)</td></tr>
+							}
+							if len(g.Incoming) == 0 {
+								<tr><td colspan="2" class="muted">None.</td></tr>
+							}
+						</tbody>
+					</table>
+				</section>
+			} else {
+				<p class="muted">The record has no statements about this resource. Pick one from the subjects below.</p>
+			}
+			<details class="panel" open?={ !g.Found }>
+				<summary class="label">All subjects ({ len(g.Subjects) })</summary>
+				<table>
+					<thead><tr><th>Subject</th><th>Type</th><th>Label</th></tr></thead>
+					<tbody>
+						for _, row := range g.Subjects {
+							<tr><td>@termValue(row.Subject)</td><td>@termValue(row.Type)</td><td>{ row.Label }</td></tr>
+						}
+					</tbody>
+				</table>
+			</details>
+		</div>
+	}
+}
+
+// termValue shows one RDF term: linked inside the graph, linked outside for
+// other web IRIs, plain for literals. Long values wrap.
+templ termValue(t TermView) {
+	if t.Href != "" {
+		<a href={ templ.SafeURL(t.Href) } title={ t.Title }>{ t.Text }</a>
+	} else if t.External != "" {
+		<a href={ templ.SafeURL(t.External) } title={ t.Title } rel="noreferrer" target="_blank">{ t.Text }</a>
+	} else {
+		<span title={ t.Title }>{ t.Text }</span>
+	}
+	if t.Note != "" {
+		<span class="muted">{ " " + t.Note }</span>
+	}
+}
+
+templ searchBar(q string) {
+	<form class="search" method="get" action={ templ.SafeURL(BasePath + "/search") }>
+		<svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z"></path></svg>
+		<input id="q" type="search" name="q" value={ q } placeholder="Search the Repository, Europeana and ECCCH" aria-label="Search" required/>
+		<kbd>&#8984;K</kbd>
+	</form>
+}
+
+// SearchPage is the shell of a search: one placeholder per source, each of
+// which loads its own results, so a slow or failed source never holds up the
+// others.
+templ SearchPage(q string, sections []SectionRef) {
+	@layout("Search", NavSearch, q) {
+		<p class="eyebrow">Discover</p>
+		if q == "" {
+			<h1 class="page-title">Search</h1>
+			<p class="muted">Type a word to search.</p>
+		} else {
+			<h1 class="page-title">Results for "{ q }"</h1>
+		}
+		for _, s := range sections {
+			<section id={ s.ID() } class="results" hx-get={ SectionURL(s.Key, q, DefaultSectionSize) } hx-trigger="load" hx-swap="outerHTML">
+				<h2>{ s.Label }</h2>
+				<div class="grid" aria-busy="true">
+					@skeletonCard()
+					@skeletonCard()
+					@skeletonCard()
+				</div>
+			</section>
+		}
+	}
+}
+
+// LocalSection lists matching Repository assets. An imported asset shows its
+// original records under it.
+templ LocalSection(s SectionRef, assets []repositoryapi.Asset, moreURL string) {
+	<section id={ s.ID() } class="results">
+		<h2>{ s.Label }</h2>
+		if len(assets) == 0 {
+			<p class="muted">Nothing in the Repository matches yet. Import a record from the sources below.</p>
+		} else {
+			<div class="grid">
+				for _, a := range assets {
+					@card(CardData{Href: assetURL(a.ID), Title: title(a), Type: assetType(a), Thumb: thumbURL(a)}) {
+						@sourcePill(string(a.Source))
+						if len(a.ExternalIds) > 0 {
+							<span class="muted small">(imported)</span>
+						}
+						for _, x := range a.ExternalIds {
+							<div class="muted small ext">@externalID(x)</div>
+						}
+					}
+				}
+			</div>
+		}
+		@showMore(s, moreURL)
+	</section>
+}
+
+// RemoteSection lists hits from a cloud source. Hits already in the
+// Repository link to their asset; the others offer an import.
+templ RemoteSection(s SectionRef, hits []RemoteHit, imported map[string]string, canImport bool, moreURL string) {
+	<section id={ s.ID() } class="results">
+		<h2>{ s.Label }</h2>
+		if len(hits) == 0 {
+			<p class="muted">No matches.</p>
+		} else {
+			<div class="grid">
+				for _, h := range hits {
+					@card(h.card(imported)) {
+						if id, ok := imported[h.Key()]; ok {
+							<a class="badge" href={ templ.SafeURL(assetURL(id)) }>Imported</a>
+						} else if canImport && h.ImportURI != "" {
+							<form method="post" action={ templ.SafeURL(BasePath + "/import") } onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Importing...'">
+								<input type="hidden" name="uri" value={ h.ImportURI }/>
+								<button type="submit" class="btn-outline small">Import</button>
+							</form>
+						}
+					}
+				}
+			</div>
+		}
+		@showMore(s, moreURL)
+	</section>
+}
+
+// SectionMessage replaces a section's results with a plain message, so a
+// failed source says so without breaking the page.
+templ SectionMessage(s SectionRef, msg string) {
+	<section id={ s.ID() } class="results">
+		<h2>{ s.Label }</h2>
+		<p class="muted">{ msg }</p>
+	</section>
+}
+
+templ showMore(s SectionRef, moreURL string) {
+	if moreURL != "" {
+		<div class="more">
+			<button type="button" class="btn-outline" hx-get={ moreURL } hx-target={ "#" + s.ID() } hx-swap="outerHTML">Show more</button>
+		</div>
+	}
+}
